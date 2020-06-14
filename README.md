@@ -14,3 +14,4 @@ sh run_nsml.sh
 ```bash
 sh run_local.sh
 ```
+# korquad-open-cs492h

@@ -414,10 +414,7 @@ def train(args, train_dataset, model, tokenizer):
 
 def evaluate(args, model, tokenizer, prefix="", val_or_test="val"):
     examples, predictions = predict(args, model, tokenizer, prefix=prefix, val_or_test=val_or_test)
-    print("examples:")
-    print(examples)
-    print("predictions:")
-    print(predictions)
+    
     # Compute the F1 and exact scores.
     results = squad_evaluate(examples, predictions)
     return results
@@ -740,7 +737,7 @@ def main():
     parser.add_argument(
         "--per_gpu_eval_batch_size", default=8, type=int, help="Batch size per GPU/CPU for evaluation."
     )
-    parser.add_argument("--learning_rate", default=5e-5, type=float, help="The initial learning rate for Adam.")
+    parser.add_argument("--learning_rate", default=2e-5, type=float, help="The initial learning rate for Adam.")
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
@@ -938,3 +935,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
