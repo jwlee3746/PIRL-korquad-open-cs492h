@@ -32,8 +32,11 @@ from transformers import (
     AlbertTokenizer,
     BertConfig,
     BertForQuestionAnswering,
+    BertModel,
+    BertPreTrainedModel,
     BertTokenizer,
     DistilBertConfig,
+    DistilBertModel,
     DistilBertForQuestionAnswering,
     DistilBertTokenizer,
     RobertaConfig,
@@ -74,8 +77,6 @@ class ElectraForQuestionAnswering(ElectraPreTrainedModel):
         start_positions=None,
         end_positions=None,
     ):
-
-
         outputs = self.electra(
             input_ids,
             attention_mask=attention_mask,
@@ -111,46 +112,165 @@ class ElectraForQuestionAnswering(ElectraPreTrainedModel):
             outputs = (total_loss,) + outputs
 
         return outputs  # (loss), start_logits, end_logits, (hidden_states), (attentions)
-    
-class Ensemble(nn.Module):
-    def __init__(self, args, config1, config2, model1, model2, config3=None, model3=None, num_labels=0):
-        super(Ensemble, self).__init__()
-        self.model1 = model1
-        self.model2 = model2
-        self.model3 = model3
-        self.dropout = nn.Dropout(0.1)
-        self.num_labels = num_labels
-
-        dim = config1.hidden_size + config2.hidden_size + (config3.hidden_size if config3 else 0)
-        self.linear1 = nn.Linear(dim, dim // 2)
-        self.classifier = nn.Linear(dim // 2, num_labels)
-
-    def forward(self, input1, input2, input3, labels):
-        output1 = self.model1(**input1)
-        output2 = self.model2(**input2)
-        weights = torch.cat((output1, output2), 1)
-
-        if self.model3:
-            if input3 is None:
-                raise ValueError("Currently using three model ensemble, the third input cannot be None")
-            else:
-                output3 = self.model3(**input3)
-                weights = torch.cat((output1, output2, output3), 1)
-        else:
-            weights = torch.cat((output1, output2), 1)
+  
+class EnsembleElectraBertForQuestionAnswering(nn.Module):
+    def __init__(self, model_1:ElectraForQuestionAnswering, model_2:DistilBertForQuestionAnswering):
+        super().__init__()
+        self.model_1 = model_1
+        self.model_2 = model_2
+        self.config1 = self.model_1.config
+        self.config2 = self.model_2.config
         
-        weights = self.linear1(weights)
-        weights = self.dropout(weights)
-        logits = self.classifier(weights)
+        self.num_labels_1 = self.config1.num_labels
+        self.electra = ElectraModel(self.config1)
+        self.qa_outputs_1 = nn.Linear(self.config1.hidden_size, self.config1.num_labels)
+        
+        self.num_labels_2 = self.config2.num_labels
+        self.distilbert = DistilBertModel(self.config2)
+        self.qa_outputs_2 = nn.Linear(self.config2.hidden_size, self.config2.num_labels)
+        
+        # TODO check with Google if it's normal there is no dropout on the token classifier of SQuAD in the TF version
+        # self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        '''
+        self.qa_outputs1 = nn.Linear(self.config1.hidden_size, self.config1.num_labels)
+        self.qa_outputs2 = nn.Linear(self.config2.hidden_size, self.config2.num_labels)
+        #self.qa_outputs = nn.Linear(self.model_1.qa_outputs.weight.size(1)*2, 2)
+        '''
+        
+    def forward(
+        self,
+        input_ids=None, #
+        attention_mask=None, #
+        token_type_ids=None, #
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        start_positions=None, #
+        end_positions=None, #
+        output_attentions=None,
+    ):
+        
+        outputs_model_1 = self.electra(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+        )
+        outputs_model_2 = self.distilbert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            #output_attentions=output_attentions,
+        )
+        #print(outputs_model_1.cpu())
+        #print(outputs_model_2.cpu())
+        sequence_output_model_1 = outputs_model_1[0]
+        sequence_output_model_2 = outputs_model_2[0]
+        
+        logits_1 = self.qa_outputs_1(sequence_output_model_1)
+        logits_2 = self.qa_outputs_2(sequence_output_model_2)
+        #print(logits_1)
+        #print(logits_2)
+        
+        start_logits_1, end_logits_1 = logits_1.split(1, dim=-1)
+        start_logits_1 = start_logits_1.squeeze(-1)
+        end_logits_1 = end_logits_1.squeeze(-1)
+        
+        start_logits_2, end_logits_2 = logits_2.split(1, dim=-1)
+        start_logits_2 = start_logits_2.squeeze(-1)
+        end_logits_2 = end_logits_2.squeeze(-1)
+        
+        start_logits = (start_logits_1 + start_logits_2) / 2
+        end_logits = (end_logits_1 + end_logits_2) / 2
+        
+        outputs = (start_logits, end_logits,) + outputs_model_1[2:]
+        if start_positions is not None and end_positions is not None:
+            # If we are on multi-GPU, split add a dimension
+            if len(start_positions.size()) > 1:
+                start_positions = start_positions.squeeze(-1)
+            if len(end_positions.size()) > 1:
+                end_positions = end_positions.squeeze(-1)
+            # sometimes the start/end positions are outside our model inputs, we ignore these terms
+            ignored_index = start_logits.size(1)
+            start_positions.clamp_(0, ignored_index)
+            end_positions.clamp_(0, ignored_index)
 
-        output = (logits,)
-        if labels is not None:
-            if self.num_labels == 1:
-                loss_fct = nn.MSELoss()
-                loss = loss_fct(logits.view(-1), labels.view(-1))
-            output = (loss,) + output
+            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+            start_loss = loss_fct(start_logits, start_positions)
+            end_loss = loss_fct(end_logits, end_positions)
+            total_loss = (start_loss + end_loss) / 2
+            outputs = (total_loss,) + outputs
 
-        return output
+        return outputs  # (loss), start_logits, end_logits, (hidden_states), (attentions)
+
+class SelfEnsembleElectraForQuestionAnswering(nn.Module):
+    def __init__(self, model_1:ElectraForQuestionAnswering, model_2:ElectraForQuestionAnswering):
+        super().__init__()
+        self.model_1 = model_1
+        self.model_2 = model_2
+        self.config = self.model_1.config
+        
+        # TODO check with Google if it's normal there is no dropout on the token classifier of SQuAD in the TF version
+        # self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        
+        #self.qa_outputs = nn.Linear(self.config.hidden_size, self.config.num_labels)
+        self.qa_outputs = nn.Linear(self.model_1.qa_outputs.weight.size(1)*2, 2)
+        
+    def forward(
+        self,
+        input_ids=None, #
+        attention_mask=None, #
+        token_type_ids=None, #
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        start_positions=None, #
+        end_positions=None, #
+        output_attentions=None,
+    ):
+        outputs_model_1 = self.model_1.electra(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+        )
+        outputs_model_2 = self.model_2.electra(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+        )
+        sequence_output_model_1 = outputs_model_1[0]
+        sequence_output_model_2 = outputs_model_2[0]
+        logits = self.qa_outputs(torch.cat([sequence_output_model_1, sequence_output_model_2], dim=-1))
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+        
+        if start_positions is not None and end_positions is not None:
+            # If we are on multi-GPU, split add a dimension
+            if len(start_positions.size()) > 1:
+                start_positions = start_positions.squeeze(-1)
+            if len(end_positions.size()) > 1:
+                end_positions = end_positions.squeeze(-1)
+            # sometimes the start/end positions are outside our model inputs, we ignore these terms
+            ignored_index = start_logits.size(1)
+            start_positions.clamp_(0, ignored_index)
+            end_positions.clamp_(0, ignored_index)
+
+            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+            start_loss = loss_fct(start_logits, start_positions)
+            end_loss = loss_fct(end_logits, end_positions)
+            total_loss = (start_loss + end_loss) / 2
+        return start_logits, end_logits
+    
 '''
 from transformers.data.metrics.squad_metrics import (
     compute_predictions_log_probs,
@@ -780,7 +900,7 @@ def main():
     parser.add_argument(
         "--per_gpu_eval_batch_size", default=8, type=int, help="Batch size per GPU/CPU for evaluation."
     )
-    parser.add_argument("--learning_rate", default=2e-5, type=float, help="The initial learning rate for Adam.")
+    parser.add_argument("--learning_rate", default=5e-6, type=float, help="The initial learning rate for Adam.")
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
@@ -933,6 +1053,7 @@ def main():
         do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
+    """
     model = model_class.from_pretrained(
         args.model_name_or_path,
         from_tf=bool(".ckpt" in args.model_name_or_path),
@@ -940,9 +1061,30 @@ def main():
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
     """
+    
+    """
     model = ElectraModel.from_pretrained("monologg/koelectra-base-v2-discriminator")
     tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-base-v2-discriminator")
     """
+    model_1 = model_class.from_pretrained(
+        args.model_name_or_path,
+        from_tf=bool(".ckpt" in args.model_name_or_path),
+        config=config,
+        cache_dir=args.cache_dir if args.cache_dir else None,
+    )
+    """
+    model_2 = ElectraForQuestionAnswering.from_pretrained(
+                "monologg/koelectra-base-v2-finetuned-korquad")
+    model = SelfEnsembleElectraForQuestionAnswering(model_1, model_2)
+    """
+    config2 = DistilBertConfig.from_pretrained("monologg/distilkobert")
+    model_2 = DistilBertForQuestionAnswering.from_pretrained(
+                "monologg/distilkobert",
+                config=config2,
+                cache_dir=args.cache_dir if args.cache_dir else None,
+    )
+    model = EnsembleElectraBertForQuestionAnswering(model_1, model_2)
+    
     if args.local_rank == 0:
         # Make sure only the first process in distributed training will download model & vocab
         torch.distributed.barrier()

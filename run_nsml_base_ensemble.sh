@@ -7,7 +7,7 @@ nsml run \
   -c 1 \
   -e run_squad_base_ensemble.py \
   -a "--model_type electra
-    --model_name_or_path monologg/koelectra-base-v2-finetuned-korquad-384
+    --model_name_or_path monologg/koelectra-small-v2-distilled-korquad-384
     --do_train
     --do_eval
     --data_dir train

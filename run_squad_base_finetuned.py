@@ -109,7 +109,7 @@ class ElectraForQuestionAnswering(ElectraPreTrainedModel):
             end_loss = loss_fct(end_logits, end_positions)
             total_loss = (start_loss + end_loss) / 2
             outputs = (total_loss,) + outputs
-        #print(outputs)
+
         return outputs  # (loss), start_logits, end_logits, (hidden_states), (attentions)
 '''
 from transformers.data.metrics.squad_metrics import (
@@ -705,7 +705,7 @@ def main():
 
     parser.add_argument(
         "--max_seq_length",
-        default=384,
+        default=512,
         type=int,
         help="The maximum total input sequence length after WordPiece tokenization. Sequences "
              "longer than this will be truncated, and sequences shorter than this will be padded.",
@@ -733,11 +733,11 @@ def main():
         "--do_lower_case", action="store_true", help="Set this flag if you are using an uncased model."
     )
 
-    parser.add_argument("--per_gpu_train_batch_size", default=16, type=int, help="Batch size per GPU/CPU for training.")
+    parser.add_argument("--per_gpu_train_batch_size", default=8, type=int, help="Batch size per GPU/CPU for training.")
     parser.add_argument(
-        "--per_gpu_eval_batch_size", default=8, type=int, help="Batch size per GPU/CPU for evaluation."
+        "--per_gpu_eval_batch_size", default=16, type=int, help="Batch size per GPU/CPU for evaluation."
     )
-    parser.add_argument("--learning_rate", default=5e-6, type=float, help="The initial learning rate for Adam.")
+    parser.add_argument("--learning_rate", default=2e-6, type=float, help="The initial learning rate for Adam.")
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
@@ -935,4 +935,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
